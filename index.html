@@ -306,24 +306,49 @@ body { font-family:'Syne',sans-serif; background:var(--bg); color:var(--text); m
 <script>
 const API = 'https://script.google.com/macros/s/AKfycbz4fV8H21L_i3bFNXqBMl67uEACRYLZl0kIYXjHvZwjUSJYmbZJROj-kf_q7MGGt_AW/exec';
 let db = { ligas:[], equipos:[], jugadores:[], tacticas:[] };
+let jsonpCounter = 0;
 
-// ─── API via GET ──────────────────────────────────────────────────────────────
-async function api(params) {
-  const url = new URL(API);
-  Object.entries(params).forEach(([k,v]) => url.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : v));
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+// ─── JSONP (evita CORS) ───────────────────────────────────────────────────────
+function jsonp(params) {
+  return new Promise((resolve, reject) => {
+    const cbName = '_cb' + (++jsonpCounter) + '_' + Date.now();
+    const url = new URL(API);
+    Object.entries(params).forEach(([k,v]) => url.searchParams.set(k, String(v)));
+    url.searchParams.set('callback', cbName);
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Timeout'));
+    }, 12000);
+
+    window[cbName] = (data) => {
+      cleanup();
+      resolve(data);
+    };
+
+    function cleanup() {
+      clearTimeout(timer);
+      delete window[cbName];
+      const s = document.getElementById(cbName);
+      if (s) s.remove();
+    }
+
+    const script = document.createElement('script');
+    script.id = cbName;
+    script.src = url.toString();
+    script.onerror = () => { cleanup(); reject(new Error('Script error')); };
+    document.head.appendChild(script);
+  });
 }
 
-async function apiAppend(sheet, values) {
-  const url = new URL(API);
-  url.searchParams.set('action', 'append');
-  url.searchParams.set('sheet', sheet);
-  url.searchParams.set('data', encodeURIComponent(JSON.stringify(values)));
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+function api(params) { return jsonp(params); }
+
+function apiAppend(sheet, values) {
+  return jsonp({
+    action: 'append',
+    sheet: sheet,
+    data: encodeURIComponent(JSON.stringify(values))
+  });
 }
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
@@ -342,7 +367,7 @@ async function init() {
     setStatus('ok','conectado');
   } catch(e) {
     setStatus('err','sin conexión');
-    showToast('Error al conectar — revisá la consola','error');
+    showToast('Error al conectar','error');
     console.error(e);
   }
 }
@@ -370,41 +395,37 @@ function loadLigas() {
 }
 
 async function guardarLiga() {
-  const nombre    = v('liga-nombre');
-  const temporada = v('liga-temporada');
-  const fechas    = v('liga-fechas');
-  const categoria = v('liga-categoria');
+  const nombre=v('liga-nombre'), temporada=v('liga-temporada'), fechas=v('liga-fechas'), categoria=v('liga-categoria');
   if (!nombre) { showToast('Ingresá el nombre','error'); return; }
   const id = uid();
   try {
     setStatus('loading','guardando...');
-    const r = await apiAppend('ligas', [id, nombre, temporada, fechas, categoria, new Date().toISOString()]);
+    const r = await apiAppend('ligas',[id,nombre,temporada,fechas,categoria,new Date().toISOString()]);
     if (r.error) throw new Error(r.error);
     db.ligas.push({id,nombre,temporada,fechas,categoria});
     updateCounters();
-    document.getElementById('liga-nombre').value = '';
+    document.getElementById('liga-nombre').value='';
     showToast('Liga guardada ✓','success');
-    navTo('page-ligas', loadLigas);
+    navTo('page-ligas',loadLigas);
     setStatus('ok','conectado');
-  } catch(e) { showToast('Error: ' + e.message,'error'); setStatus('err','error'); console.error(e); }
+  } catch(e) { showToast('Error: '+e.message,'error'); setStatus('err','error'); }
 }
 
 // ─── EQUIPOS ──────────────────────────────────────────────────────────────────
 function prepEquipoForm() {
-  document.getElementById('equipo-liga').innerHTML =
-    '<option value="">Seleccioná una liga</option>' +
+  document.getElementById('equipo-liga').innerHTML = '<option value="">Seleccioná una liga</option>'+
     db.ligas.map(l=>`<option value="${l.id}">${l.nombre}</option>`).join('');
 }
 
 function loadEquipos() {
   const el = document.getElementById('equipos-list');
   if (!db.equipos.length) {
-    el.innerHTML = `<div class="empty"><div class="empty-icon">👕</div><div class="empty-title">Sin equipos</div><div>Creá tu primer equipo</div></div>`;
+    el.innerHTML=`<div class="empty"><div class="empty-icon">👕</div><div class="empty-title">Sin equipos</div><div>Creá tu primer equipo</div></div>`;
     return;
   }
   el.innerHTML = db.equipos.map(eq => {
-    const liga = db.ligas.find(l=>l.id===eq.liga_id);
-    const n = db.jugadores.filter(j=>j.equipo_id===eq.id).length;
+    const liga=db.ligas.find(l=>l.id===eq.liga_id);
+    const n=db.jugadores.filter(j=>j.equipo_id===eq.id).length;
     return `<div class="liga-row" onclick="verJugadoresDeEquipo('${eq.id}')">
       <div class="liga-av" style="background:${eq.color||'var(--accent)'}">${eq.nombre.slice(0,2).toUpperCase()}</div>
       <div style="flex:1"><div class="liga-name">${eq.nombre}</div><div class="liga-sub">${liga?liga.nombre:'Sin liga'} · ${n} jugadores</div></div>
@@ -414,62 +435,55 @@ function loadEquipos() {
 }
 
 async function guardarEquipo() {
-  const nombre  = v('equipo-nombre');
-  const liga_id = v('equipo-liga');
-  const color   = v('equipo-color');
+  const nombre=v('equipo-nombre'), liga_id=v('equipo-liga'), color=v('equipo-color');
   if (!nombre) { showToast('Ingresá el nombre','error'); return; }
-  const id = uid();
+  const id=uid();
   try {
     setStatus('loading','guardando...');
-    const r = await apiAppend('equipos', [id, liga_id, nombre, color, new Date().toISOString()]);
+    const r=await apiAppend('equipos',[id,liga_id,nombre,color,new Date().toISOString()]);
     if (r.error) throw new Error(r.error);
     db.equipos.push({id,liga_id,nombre,color});
     updateCounters();
-    document.getElementById('equipo-nombre').value = '';
+    document.getElementById('equipo-nombre').value='';
     showToast('Equipo guardado ✓','success');
-    navTo('page-equipos', loadEquipos);
+    navTo('page-equipos',loadEquipos);
     setStatus('ok','conectado');
-  } catch(e) { showToast('Error: ' + e.message,'error'); setStatus('err','error'); console.error(e); }
+  } catch(e) { showToast('Error: '+e.message,'error'); setStatus('err','error'); }
 }
 
 // ─── JUGADORES ────────────────────────────────────────────────────────────────
 function prepJugadorForm() {
-  document.getElementById('jug-equipo').innerHTML =
-    '<option value="">Seleccioná un equipo</option>' +
+  document.getElementById('jug-equipo').innerHTML='<option value="">Seleccioná un equipo</option>'+
     db.equipos.map(e=>`<option value="${e.id}">${e.nombre}</option>`).join('');
 }
 
 function loadJugadores() {
-  document.getElementById('filtro-equipo').innerHTML =
-    '<option value="">Todos los equipos</option>' +
+  document.getElementById('filtro-equipo').innerHTML='<option value="">Todos los equipos</option>'+
     db.equipos.map(e=>`<option value="${e.id}">${e.nombre}</option>`).join('');
   prepJugadorForm();
   filtrarJugadores();
 }
 
 function filtrarJugadores() {
-  const id = document.getElementById('filtro-equipo').value;
-  renderJugadores(id ? db.jugadores.filter(j=>j.equipo_id===id) : db.jugadores);
+  const id=document.getElementById('filtro-equipo').value;
+  renderJugadores(id?db.jugadores.filter(j=>j.equipo_id===id):db.jugadores);
 }
 
 function verJugadoresDeEquipo(id) {
-  navTo('page-jugadores', () => {
-    loadJugadores();
-    setTimeout(()=>{ document.getElementById('filtro-equipo').value=id; filtrarJugadores(); }, 100);
-  });
+  navTo('page-jugadores',()=>{ loadJugadores(); setTimeout(()=>{ document.getElementById('filtro-equipo').value=id; filtrarJugadores(); },100); });
   setActive('btn-jugadores');
 }
 
 function renderJugadores(list) {
-  const el = document.getElementById('jugadores-list');
+  const el=document.getElementById('jugadores-list');
   if (!list.length) {
-    el.innerHTML = `<div class="empty"><div class="empty-icon">🏀</div><div class="empty-title">Sin jugadores</div><div>Agregá jugadores al plantel</div></div>`;
+    el.innerHTML=`<div class="empty"><div class="empty-icon">🏀</div><div class="empty-title">Sin jugadores</div><div>Agregá jugadores al plantel</div></div>`;
     return;
   }
-  const byEquipo = {};
-  list.forEach(j => { if (!byEquipo[j.equipo_id]) byEquipo[j.equipo_id]=[]; byEquipo[j.equipo_id].push(j); });
-  el.innerHTML = Object.entries(byEquipo).map(([eid,jugs]) => {
-    const eq = db.equipos.find(e=>e.id===eid)||{nombre:'Sin equipo',color:'#666'};
+  const byEquipo={};
+  list.forEach(j=>{ if(!byEquipo[j.equipo_id]) byEquipo[j.equipo_id]=[]; byEquipo[j.equipo_id].push(j); });
+  el.innerHTML=Object.entries(byEquipo).map(([eid,jugs])=>{
+    const eq=db.equipos.find(e=>e.id===eid)||{nombre:'Sin equipo',color:'#666'};
     return `<div class="section-title">${eq.nombre}</div>
     <div class="card" style="padding:8px 14px;margin-bottom:14px">
       ${jugs.sort((a,b)=>parseInt(a.camiseta)-parseInt(b.camiseta)).map(j=>`
@@ -482,94 +496,85 @@ function renderJugadores(list) {
 }
 
 async function guardarJugador() {
-  const numero    = v('jug-numero');
-  const nombre    = v('jug-nombre');
-  const equipo_id = v('jug-equipo');
-  const posicion  = v('jug-posicion');
+  const numero=v('jug-numero'), nombre=v('jug-nombre'), equipo_id=v('jug-equipo'), posicion=v('jug-posicion');
   if (!nombre)    { showToast('Ingresá el nombre','error'); return; }
   if (!numero)    { showToast('Ingresá el número','error'); return; }
   if (!equipo_id) { showToast('Seleccioná un equipo','error'); return; }
   if (!posicion)  { showToast('Seleccioná una posición','error'); return; }
-  const id = uid();
+  const id=uid();
   try {
     setStatus('loading','guardando...');
-    const r = await apiAppend('jugadores', [id, equipo_id, nombre, numero, posicion, new Date().toISOString()]);
+    const r=await apiAppend('jugadores',[id,equipo_id,nombre,numero,posicion,new Date().toISOString()]);
     if (r.error) throw new Error(r.error);
     db.jugadores.push({id,equipo_id,nombre,camiseta:numero,posicion});
     updateCounters();
-    document.getElementById('jug-nombre').value = '';
-    document.getElementById('jug-numero').value = '';
-    document.getElementById('jug-posicion').value = '';
+    document.getElementById('jug-nombre').value='';
+    document.getElementById('jug-numero').value='';
+    document.getElementById('jug-posicion').value='';
     document.querySelectorAll('#pos-selector .pos-btn').forEach(b=>b.classList.remove('selected'));
     showToast('Jugador guardado ✓','success');
-    navTo('page-jugadores', loadJugadores);
+    navTo('page-jugadores',loadJugadores);
     setStatus('ok','conectado');
-  } catch(e) { showToast('Error: ' + e.message,'error'); setStatus('err','error'); console.error(e); }
+  } catch(e) { showToast('Error: '+e.message,'error'); setStatus('err','error'); }
 }
 
 // ─── TÁCTICAS ─────────────────────────────────────────────────────────────────
 function prepTacticaForm() {
-  document.getElementById('tac-equipo').innerHTML =
-    '<option value="">General</option>' +
+  document.getElementById('tac-equipo').innerHTML='<option value="">General</option>'+
     db.equipos.map(e=>`<option value="${e.id}">${e.nombre}</option>`).join('');
 }
 
 function loadTacticas() {
   prepTacticaForm();
-  const el = document.getElementById('tacticas-list');
-  const cats = ['Ataque','Defensa','Presión','Especiales'];
-  const colors = {Ataque:'var(--accent)',Defensa:'var(--green)',Presión:'var(--orange)',Especiales:'var(--purple)'};
-  const icons  = {Ataque:'⚡',Defensa:'🛡',Presión:'💥',Especiales:'⭐'};
+  const el=document.getElementById('tacticas-list');
+  const cats=['Ataque','Defensa','Presión','Especiales'];
+  const colors={Ataque:'var(--accent)',Defensa:'var(--green)',Presión:'var(--orange)',Especiales:'var(--purple)'};
+  const icons={Ataque:'⚡',Defensa:'🛡',Presión:'💥',Especiales:'⭐'};
   if (!db.tacticas.length) {
-    el.innerHTML = `<div class="empty"><div class="empty-icon">📋</div><div class="empty-title">Sin jugadas</div><div>Creá jugadas para usar durante el partido</div></div>`;
+    el.innerHTML=`<div class="empty"><div class="empty-icon">📋</div><div class="empty-title">Sin jugadas</div><div>Creá jugadas para usar durante el partido</div></div>`;
     return;
   }
-  el.innerHTML = cats.map(cat => {
-    const items = db.tacticas.filter(t=>t.categoria===cat);
+  el.innerHTML=cats.map(cat=>{
+    const items=db.tacticas.filter(t=>t.categoria===cat);
     if (!items.length) return '';
     return `<div class="section-title">${icons[cat]} ${cat}</div>
     <div class="card" style="padding:8px 14px;margin-bottom:14px">
-      ${items.map(t=>`
-        <div class="list-item">
-          <div style="flex:1"><div class="list-name">${t.titulo}</div></div>
-          <span class="badge" style="background:${colors[cat]}22;color:${colors[cat]}">${cat}</span>
-        </div>`).join('')}
+      ${items.map(t=>`<div class="list-item"><div style="flex:1"><div class="list-name">${t.titulo}</div></div>
+        <span class="badge" style="background:${colors[cat]}22;color:${colors[cat]}">${cat}</span></div>`).join('')}
     </div>`;
   }).join('');
 }
 
 async function guardarTactica() {
-  const categoria = v('tac-categoria');
-  const titulo    = v('tac-titulo');
-  const equipo_id = v('tac-equipo');
+  const categoria=v('tac-categoria'), titulo=v('tac-titulo'), equipo_id=v('tac-equipo');
   if (!categoria) { showToast('Seleccioná una categoría','error'); return; }
   if (!titulo)    { showToast('Ingresá el título','error'); return; }
-  const id = uid();
+  const id=uid();
   try {
     setStatus('loading','guardando...');
-    const r = await apiAppend('tacticas', [id, equipo_id, categoria, titulo, new Date().toISOString()]);
+    const r=await apiAppend('tacticas',[id,equipo_id,categoria,titulo,new Date().toISOString()]);
     if (r.error) throw new Error(r.error);
     db.tacticas.push({id,equipo_id,categoria,titulo});
     updateCounters();
-    document.getElementById('tac-titulo').value = '';
-    document.getElementById('tac-categoria').value = '';
+    document.getElementById('tac-titulo').value='';
+    document.getElementById('tac-categoria').value='';
     document.querySelectorAll('#cat-selector .pos-btn').forEach(b=>b.classList.remove('selected'));
     showToast('Jugada guardada ✓','success');
-    navTo('page-tacticas', loadTacticas);
+    navTo('page-tacticas',loadTacticas);
     setStatus('ok','conectado');
-  } catch(e) { showToast('Error: ' + e.message,'error'); setStatus('err','error'); console.error(e); }
+  } catch(e) { showToast('Error: '+e.message,'error'); setStatus('err','error'); }
 }
 
 // ─── UI HELPERS ───────────────────────────────────────────────────────────────
 function v(id) { return document.getElementById(id).value.trim(); }
 function showPage(id) { document.querySelectorAll('.page').forEach(p=>p.classList.remove('active')); document.getElementById(id).classList.add('active'); window.scrollTo(0,0); }
-function navTo(pageId, fn) { showPage(pageId); if(fn) fn(); }
+function navTo(pageId,fn) { showPage(pageId); if(fn) fn(); }
 function setActive(id) { document.querySelectorAll('.bottom-btn').forEach(b=>b.classList.remove('active')); document.getElementById(id).classList.add('active'); }
-function setStatus(type, text) { document.getElementById('statusDot').className=`status-dot dot-${type==='ok'?'ok':type==='err'?'err':'loading'}`; document.getElementById('statusText').textContent=text; }
-function showToast(msg, type='success') { const t=document.getElementById('toast'); t.textContent=msg; t.className=`toast ${type} show`; setTimeout(()=>t.classList.remove('show'),2800); }
-function selectPos(el, val) { document.querySelectorAll('#pos-selector .pos-btn').forEach(b=>b.classList.remove('selected')); el.classList.add('selected'); document.getElementById('jug-posicion').value=val; }
-function selectCat(el, val) { document.querySelectorAll('#cat-selector .pos-btn').forEach(b=>b.classList.remove('selected')); el.classList.add('selected'); document.getElementById('tac-categoria').value=val; }
-function selectColor(el, val) { document.querySelectorAll('.color-swatch').forEach(b=>b.classList.remove('selected')); el.classList.add('selected'); document.getElementById('equipo-color').value=val; }
+function setStatus(type,text) { document.getElementById('statusDot').className=`status-dot dot-${type==='ok'?'ok':type==='err'?'err':'loading'}`; document.getElementById('statusText').textContent=text; }
+function showToast(msg,type='success') { const t=document.getElementById('toast'); t.textContent=msg; t.className=`toast ${type} show`; setTimeout(()=>t.classList.remove('show'),2800); }
+function selectPos(el,val) { document.querySelectorAll('#pos-selector .pos-btn').forEach(b=>b.classList.remove('selected')); el.classList.add('selected'); document.getElementById('jug-posicion').value=val; }
+function selectCat(el,val) { document.querySelectorAll('#cat-selector .pos-btn').forEach(b=>b.classList.remove('selected')); el.classList.add('selected'); document.getElementById('tac-categoria').value=val; }
+function selectColor(el,val) { document.querySelectorAll('.color-swatch').forEach(b=>b.classList.remove('selected')); el.classList.add('selected'); document.getElementById('equipo-color').value=val; }
 
 init();
 </script>
