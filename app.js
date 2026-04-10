@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/XXXXX/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbzJ6S0IWZDKvj9ihsXoe3dI4U1HZhhV37Gg1MVdLTBFiR26uCbWnCFZXugYfKP11w9Q/exec";
 
 const canvas = document.getElementById("court");
 const ctx = canvas.getContext("2d");
